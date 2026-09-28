@@ -141,6 +141,9 @@ LOGIN_ACCOUNT_PATH = "/v2/plugin/login/account"
 REFRESH_PATH = "/v2/plugin/auth/token/refresh"
 CHECKIN_PATH = "/v2/billing/meter/daily-checkin"
 GET_RESOURCE_PATH = "/v2/billing/meter/get-user-resource"
+# 上游对"今天已经签过"的答复：4xx + code 10001，或 200 + 这句文案。
+# 它既不是"签到成功"，也不是"签到失败"，而是一个当天终态。
+ALREADY_CHECKIN_MSG = "今天已签到，请明天再来"
 
 LOGIN_PENDING = 11217
 LOGIN_TTL_SECONDS = 600
@@ -534,6 +537,28 @@ class Account(object):
         today_str = time.strftime("%Y-%m-%d")
         return not str(self.last_checkin).startswith(today_str)
 
+    @staticmethod
+    def _is_already_checked_in(code, msg):
+        """上游是否在说"今天已签到"（当天终态，与成功/失败都不同）。"""
+        if str(code) == "10001":
+            return True
+        text = str(msg or "")
+        return "已签到" in text or "明天再来" in text
+
+    def _mark_checked_in(self):
+        """"今天已签到"的落盘动作。
+
+        上游可能用 4xx 或 code 10001 表达这个终态，但这一天的签到确实已经
+        生效。不落盘的话 can_checkin() 会一直返回 True，于是每个调度窗口、
+        每次容器重启都会再发一次重复的签到请求。
+        """
+        self.last_checkin = time.strftime("%Y-%m-%d %H:%M:%S")
+        if self.path and os.path.exists(os.path.dirname(self.path)):
+            try:
+                self.save(os.path.dirname(self.path))
+            except Exception:
+                pass
+
     def can_daily_chat(self):
         if self.realm != "intl":
             return False
@@ -653,16 +678,30 @@ class Account(object):
                                 proxy=self.proxy)
             code = payload.get("code", -1)
             msg = payload.get("msg") or "ok"
-            self.last_checkin = time.strftime("%Y-%m-%d %H:%M:%S")
-            if self.path and os.path.exists(os.path.dirname(self.path)):
-                self.save(os.path.dirname(self.path))
-            return {"ok": (code == 0 or code == 10001), "code": code, "msg": msg, "data": payload.get("data")}
+            if self._is_already_checked_in(code, msg):
+                # 当天已签过的终态：按旧版形态回传（不是失败，也不算"签到成功"），
+                # 面板与调度器展示上游原文，但必须落盘以免重复请求。
+                self._mark_checked_in()
+                text = msg or ALREADY_CHECKIN_MSG
+                return {"ok": False, "already_checked_in": True, "code": code,
+                        "msg": text, "error": text, "data": payload.get("data")}
+            if code == 0:
+                self._mark_checked_in()
+            return {"ok": code == 0, "code": code, "msg": msg, "data": payload.get("data")}
         except urllib.error.HTTPError as exc:
             try:
                 body = json.loads(exc.read().decode("utf-8") or "{}")
-                return {"ok": False, "error": body.get("msg") or ("HTTP %d" % exc.code)}
             except Exception:
-                return {"ok": False, "error": "HTTP %d" % exc.code}
+                body = {}
+            msg = body.get("msg") or ""
+            # 上游对"今天已签到"同样回 4xx：它是成功终态，必须落盘，
+            # 否则每个调度窗口、每次容器重启都会重复请求，并一直被记成失败。
+            if self._is_already_checked_in(body.get("code"), msg):
+                self._mark_checked_in()
+                text = msg or ALREADY_CHECKIN_MSG
+                return {"ok": False, "already_checked_in": True, "code": body.get("code"),
+                        "msg": text, "error": text}
+            return {"ok": False, "error": msg or ("HTTP %d" % exc.code)}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
@@ -1160,7 +1199,8 @@ class AccountPool(object):
             "enabled": True,
         })
         self.add(account)
-        if realm == "cn":
+        if realm == "cn" and account.can_checkin():
+            # can_checkin() 先看落盘的 lastCheckin：当天签过就不再发请求
             try: account.checkin()
             except Exception: pass
         with self._lock: self.logins.pop(state, None)
@@ -1202,7 +1242,7 @@ class AccountPool(object):
             "enabled": True,
         })
         self.add(account)
-        if detected_realm == "cn":
+        if detected_realm == "cn" and account.can_checkin():
             try: account.checkin()
             except Exception: pass
         return account
