@@ -1,0 +1,23 @@
+# 拉取式部署（NAS）—— 不编译，只下载 GitHub Actions 构建好的镜像。
+#
+# 放置位置：NAS 的部署目录，与 accounts/ usage/ 同级
+#           /vol1/1000/docker/wbapi-hub/
+# 升级：改下面 image 的 TAG，然后 ./update.sh
+# 回滚：把 TAG 改回旧值，再 ./update.sh
+services:
+  wb-proxy:
+    # 注意：不要写 build: .，否则 docker compose 会改为本地编译。
+    # latest = nas 分支最新构建；想锁定版本就用带日期的 tag（都在同一个仓库）。
+    image: ghcr.io/yuwancumian2009/workbuddy2api-hub:latest
+    container_name: wb-proxy
+    restart: unless-stopped
+    ports:
+      - "8788:8788"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8788
+      - TZ=Asia/Shanghai
+    volumes:
+      # 账号凭证与用量流水，升级镜像不影响
+      - ./accounts:/app/accounts
+      - ./usage:/app/usage
