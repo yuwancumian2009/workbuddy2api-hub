@@ -113,3 +113,32 @@ python tests/run_all.py nas                   # 只跑定制用例
 * `tests/_test_nas_scheduler_windows.py` —— 窗口随机、每天一次、补跑策略、状态字段；
 * `tests/_test_nas_checkin_already.py` —— 重复签到的两种响应形态、落盘、真失败不落盘、
   调度器第二轮**不再发请求**。
+
+---
+
+## 五、部署现状（迁移记录）
+
+| 项 | 值 |
+|---|---|
+| NAS 上跑的版本 | `nas-v1.6.4-nas1`（2026-09-28 由 v1.5.4 本地编译版切过来） |
+| 切换前镜像（回滚用） | `wb-local-build:20260926-before-pull`（本地编译产物，仍在 NAS 上） |
+| 拉取式 compose | `docker-compose.pull.yml`（与旧的 `docker-compose.yml` 并存，互不干扰） |
+| 部署后复验 | `./verify.sh` |
+
+回滚：
+
+```bash
+docker compose -f docker-compose.yml up -d   # 旧 compose，image 已在本地，不会重新编译
+```
+
+### 上游 v1.6.x 带来的行为变化（不是本 fork 的改动）
+
+1. **LAN 模式默认开启 API Key 校验**：`Dockerfile` 的 `CMD` 带 `--lan`，首次运行会生成
+   `launcher_key` 写进 `accounts/settings.json`，并把它当作 `/v1` 的 API Key。
+   v1.5.4 时 `/health` 的 `api_key_required` 为 `false`，现在为 `true` —— 不带 key 直接调
+   `/v1/*` 的客户端会收到 401。要恢复旧的免鉴权行为：在面板里关掉鉴权（写
+   `settings.json` 的 `auth_disabled: true`）。
+2. `/health` 返回字段变少（不再含 `uid`/`domain`/`issuer`/`credential_file`/`expires_at`）。
+
+排查时注意：`wb.o.hhxin.top` 是**另一个实例**（不是 NAS 这台），两边 `/health` 字段不同，别混淆。
+
