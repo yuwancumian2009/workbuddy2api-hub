@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # 在 NAS 的部署目录执行：拉取新镜像并重建容器（不编译）。
 #
-#   ./update.sh              # 拉取当前 image tag 并重建
-#   ./update.sh nas-v1.6.4-nas1   # 顺便把 image tag 改成指定版本后再拉取
+#   ./update.sh                          # 用当前 compose 文件拉取并重建
+#   ./update.sh nas-v1.6.4-nas1          # 顺便把 image tag 改成指定版本再拉取
+#   COMPOSE_FILE=docker-compose.pull.yml ./update.sh   # 用拉取式 compose
+#
+# 回滚：把 image tag 改回旧值（或直接用旧的 docker-compose.yml）再跑一次。
 set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")"
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
+export COMPOSE_FILE
 
 # NAS 上普通用户通常不在 docker 组，退回 sudo。
 DOCKER="docker"
@@ -15,10 +20,10 @@ fi
 
 if [ "$#" -ge 1 ]; then
   NEW_TAG="$1"
-  echo "==> 切换镜像 tag → $NEW_TAG"
-  cp -f docker-compose.yml "docker-compose.yml.bak.$(date +%Y%m%d-%H%M%S)"
-  sed -i "s|^\( *image: .*workbuddy2api-hub:\).*$|\1${NEW_TAG}|" docker-compose.yml
-  grep -n "image:" docker-compose.yml
+  echo "==> 切换 $COMPOSE_FILE 的 image tag → $NEW_TAG"
+  cp -f "$COMPOSE_FILE" "$COMPOSE_FILE.bak.$(date +%Y%m%d-%H%M%S)"
+  sed -i "s|^\( *image: .*workbuddy2api-hub:\).*$|\1${NEW_TAG}|" "$COMPOSE_FILE"
+  grep -n "image:" "$COMPOSE_FILE"
 fi
 
 echo "==> 当前使用中的镜像"
@@ -31,7 +36,7 @@ echo "==> 重建容器"
 $DOCKER compose up -d
 
 echo "==> 等待就绪"
-for _ in $(seq 1 20); do
+for _ in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:8788/health" >/dev/null 2>&1; then break; fi
   sleep 1
 done
